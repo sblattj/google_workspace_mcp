@@ -246,6 +246,37 @@ def _compute_scope_fingerprint() -> str:
 
 
 # Custom FastMCP that adds secure middleware stack for OAuth 2.1
+def _apply_tool_profile(tools):
+    """Hide tools outside the active profile, and shorten what remains.
+
+    Discovery only: FastMCP's ``call_tool`` dispatches through its tool manager
+    without consulting ``list_tools``, so a hidden tool invoked by name still
+    runs. On the default ``complete`` profile this is a no-op and the advertised
+    surface is byte-identical to previous releases.
+    """
+    try:
+        from core.tool_profiles import get_state, terse
+
+        state = get_state()
+        if not state.is_reduced:
+            return tools
+        visible = [t for t in tools if state.is_visible(t.name)]
+        shortened = []
+        for tool in visible:
+            summary = terse(tool.description)
+            shortened.append(
+                tool
+                if summary == tool.description
+                else tool.model_copy(update={"description": summary})
+            )
+        return shortened
+    except Exception:  # noqa: BLE001
+        # Never let disclosure bookkeeping break tools/list; fail open to the
+        # full surface, which is the historical behaviour.
+        logger.exception("Tool profile filtering failed; advertising all tools")
+        return tools
+
+
 class SecureFastMCP(FastMCP):
     def http_app(self, **kwargs) -> "Starlette":
         """Override to add secure middleware stack for OAuth 2.1."""
@@ -276,6 +307,7 @@ class SecureFastMCP(FastMCP):
         runtime still resolves the email correctly via the service decorator.
         """
         tools = list(await super().list_tools(run_middleware=run_middleware))
+        tools = _apply_tool_profile(tools)
         if is_trust_gateway_identity():
             patched = []
             for tool in tools:
@@ -319,6 +351,13 @@ class SecureFastMCP(FastMCP):
         inject the default BEFORE that validation step.
         """
         arguments = arguments or {}
+        # The progressive-disclosure meta-tools are server-local: they touch no
+        # Google API and take no user_google_email, so injecting one makes
+        # pydantic reject the call as an unexpected keyword argument.
+        from core.tool_profiles import ALWAYS_VISIBLE
+
+        if name in ALWAYS_VISIBLE:
+            return await super().call_tool(name, arguments, *args, **kwargs)
         if is_trust_gateway_identity():
             # The verified gateway principal is authoritative for every tool, and the
             # parameter is gone from tool signatures. Drop any caller-supplied email

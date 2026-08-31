@@ -733,6 +733,14 @@ def main():
     # Filter tools based on tier configuration (if tier-based loading is enabled)
     tools_removed = filter_server_tools(server)
 
+    # Register the progressive-disclosure meta-tools AFTER the tier filter, so
+    # they survive it: they are the only route back to a tool the active
+    # profile hides, and filter_server_tools knows nothing about them.
+    try:
+        import core.profile_tools  # noqa: F401
+    except Exception:  # noqa: BLE001
+        logger.exception("Failed to register tool-profile meta-tools")
+
     ui.section("Services")
     ui.grid([(SERVICE_ICONS.get(t, "🔧"), t.title()) for t in loaded])
     ui.blank()
