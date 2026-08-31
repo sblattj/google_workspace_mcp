@@ -1,5 +1,18 @@
 <!-- mcp-name: io.github.taylorwilsdon/workspace-mcp -->
 
+> ### ℹ️ This is a fork
+>
+> **Upstream: [taylorwilsdon/google_workspace_mcp](https://github.com/taylorwilsdon/google_workspace_mcp)** — all
+> of the Google Workspace MCP server below is Taylor Wilsdon's work, MIT licensed, and full credit for it
+> belongs to him and the upstream contributors. Please star and follow the upstream project; issues with the
+> server itself belong there, not here.
+>
+> This fork adds exactly one thing, on top of an unmodified `v1.25.2`: **progressive tool disclosure**, so the
+> server can advertise a small tool surface instead of all 122 tools on every `tools/list`. See
+> [Progressive tool disclosure](#progressive-tool-disclosure). Default behaviour is unchanged.
+>
+> Not published to PyPI — the `workspace-mcp` package on PyPI is upstream's. Install this fork from source.
+
 <div align="center">
 
 # <span style="color:#cad8d9">Google Workspace MCP Server</span> <img src="https://github.com/user-attachments/assets/b89524e4-6e6e-49e6-ba77-00d6df0c6e5c" width="80" align="right" />
@@ -237,6 +250,52 @@ uv run workspace-cli call search_gmail_messages query="is:unread" max_results=5
 ```
 
 Install globally with `uv tool install .` from this repo. ⚠️ Don't use `uvx workspace-cli` - an abandoned PyPI package squats that name.
+
+## Progressive tool disclosure
+
+*(Added by this fork. Upstream advertises every registered tool on every `tools/list`.)*
+
+With all twelve services loaded this server registers **122 tools**, and every one of them is sent to
+the model on every `tools/list` — a large fixed context cost paid before any work happens, in a
+session that usually touches one or two services.
+
+Set `WORKSPACE_MCP_TOOL_PROFILE` to shrink the advertised surface:
+
+Measured over stdio with all twelve services loaded:
+
+| Profile | Tools advertised | `tools/list` payload | Reduction |
+| --- | --- | --- | --- |
+| `complete` *(default)* | 124 | 240 KB (~61k tokens) | — |
+| `extended` | 94 | 149 KB (~38k tokens) | -38% |
+| `core` | 48 | 82 KB (~21k tokens) | **-66%** |
+
+Description text alone drops 87% at `core`; the rest of the payload is JSON parameter schema, which
+is why the total is -66% rather than -87%.
+
+Tiers come from the existing `core/tool_tiers.yaml`. The default is `complete`, so upgrading changes
+nothing until you opt in.
+
+**Hiding is discovery-only — it never disables anything.** FastMCP dispatches `call_tool` through its
+tool manager without consulting `list_tools`, so a hidden tool invoked by name still runs normally.
+
+Two always-advertised meta-tools drive it:
+
+- **`workspace_tools`** — `list_groups` (every service group, its tool counts, which are hidden),
+  `activate` / `deactivate` a service group, `set_profile` (`core` | `extended` | `complete`).
+  Activating a group reveals that service's *full* surface regardless of tier, so an agent that needs
+  all of Gmail pays for Gmail rather than for all twelve services. Changes fire
+  `notifications/tools/list_changed`.
+- **`describe_tool`** — full description and parameter schema for any registered tool, **including one
+  the active profile currently hides**. The reduced listing carries one-line summaries, so call this
+  before using an unfamiliar tool.
+
+```jsonc
+// claude_desktop_config.json / .mcp.json
+"env": { "WORKSPACE_MCP_TOOL_PROFILE": "core" }
+```
+
+A tool absent from `tool_tiers.yaml` stays visible rather than silently disappearing, and if profile
+bookkeeping ever raises, filtering fails open to the full surface.
 
 ## Deployment & Advanced Configuration
 
